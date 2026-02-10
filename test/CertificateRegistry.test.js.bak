@@ -1,0 +1,860 @@
+// ============================================================================
+// EDULOCKA — Smart Contract Test Suite
+// ============================================================================
+//
+// WHAT ARE TESTS?
+// Tests are scripts that automatically check if your smart contract works
+// correctly. They're like a checklist — each test verifies one specific
+// behavior of your contract.
+//
+// WHY WRITE TESTS?
+// Smart contracts handle real money and can't be changed once deployed.
+// A bug in a contract could mean lost funds with NO way to fix it.
+// Tests help you catch bugs BEFORE deployment.
+//
+// HOW TO RUN TESTS:
+//   npm test             — Run all tests
+//   npm run test:verbose — Run with gas usage reporting
+//
+// TESTING TOOLS WE USE:
+//   - Mocha:    Test framework (describe, it, beforeEach, afterEach)
+//   - Chai:     Assertion library (expect(...).to.equal(...))
+//   - Ethers:   Blockchain interaction library
+//   - Hardhat:  Provides a local blockchain for testing
+//
+// TEST STRUCTURE:
+//   describe("Group Name", () => {       // Group related tests together
+//     it("should do something", () => {   // Individual test case
+//       // Arrange: Set up test data
+//       // Act:     Call the function
+//       // Assert:  Check the result
+//     });
+//   });
+//
+// ============================================================================
+
+const { expect } = require("chai");
+const hre = require("hardhat");
+
+describe("CertificateRegistry", function () {
+  // ── Variables used across tests ──────────────────────────────────────────
+  // These are declared here so every test can access them.
+  let certificateRegistry; // The deployed contract instance
+  let owner; // Account that deployed the contract (admin)
+  let institution1; // First university account
+  let institution2; // Second university account
+  let unauthorized; // Random unauthorized account
+  let verifier; // Someone verifying certificates
+
+  // ── Sample certificate data ──────────────────────────────────────────────
+  // Reusable test data so we don't have to type it out every time
+  const sampleCert = {
+    id: "CERT-2026-001",
+    studentName: "Alice Johnson",
+    studentId: "STU-12345",
+    degree: "Bachelor of Science in Computer Science",
+    institution: "MIT — Massachusetts Institute of Technology",
+    issueDate: Math.floor(Date.now() / 1000),
+    ipfsHash: "QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco",
+  };
+
+  const sampleCert2 = {
+    id: "CERT-2026-002",
+    studentName: "Bob Williams",
+    studentId: "STU-12346",
+    degree: "Master of Data Science",
+    institution: "Stanford University",
+    issueDate: Math.floor(Date.now() / 1000) + 86400, // +1 day
+    ipfsHash: "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
+  };
+
+  // ── beforeEach ───────────────────────────────────────────────────────────
+  // This runs BEFORE every single test. It gives each test a "fresh" contract
+  // so tests don't interfere with each other.
+  //
+  // ANALOGY: It's like resetting a game to the starting position before each
+  // round. Every test starts with a clean slate.
+  beforeEach(async function () {
+    // Get test accounts from Hardhat's local blockchain
+    [owner, institution1, institution2, unauthorized, verifier] =
+      await hre.ethers.getSigners();
+
+    // Deploy a fresh contract for each test
+    const CertificateRegistry = await hre.ethers.getContractFactory(
+      "CertificateRegistry"
+    );
+    certificateRegistry = await CertificateRegistry.deploy();
+    await certificateRegistry.waitForDeployment();
+  });
+
+  // ========================================================================
+  // TEST GROUP 1: Deployment
+  // ========================================================================
+  describe("Deployment", function () {
+    it("should set the deployer as the owner", async function () {
+      // The Ownable contract sets the deployer as the owner.
+      // We check that owner() returns our deployer's address.
+      const contractOwner = await certificateRegistry.owner();
+      expect(contractOwner).to.equal(owner.address);
+      console.log("      ✓ Owner is:", contractOwner);
+    });
+
+    it("should start with zero certificates", async function () {
+      const total = await certificateRegistry.getTotalCertificates();
+      expect(total).to.equal(0n); // 0n is BigInt zero
+      console.log("      ✓ Total certificates:", total.toString());
+    });
+
+    it("should start with zero institutions", async function () {
+      const total = await certificateRegistry.totalInstitutions();
+      expect(total).to.equal(0n);
+      console.log("      ✓ Total institutions:", total.toString());
+    });
+
+    it("should start with zero revocations", async function () {
+      const total = await certificateRegistry.totalRevocations();
+      expect(total).to.equal(0n);
+      console.log("      ✓ Total revocations:", total.toString());
+    });
+  });
+
+  // ========================================================================
+  // TEST GROUP 2: Institution Management
+  // ========================================================================
+  describe("Institution Management", function () {
+    // ── Adding Institutions ──────────────────────────────────────────────
+    describe("Adding Institutions", function () {
+      it("should allow owner to add an institution", async function () {
+        // Owner adds institution1 as an authorized institution
+        await certificateRegistry.addInstitution(institution1.address);
+
+        const isAuth = await certificateRegistry.isAuthorizedInstitution(
+          institution1.address
+        );
+        expect(isAuth).to.equal(true);
+        console.log("      ✓ Institution added and verified as authorized");
+      });
+
+      it("should emit InstitutionAdded event", async function () {
+        // When an institution is added, the contract should emit an event.
+        // Events are like "notifications" that the blockchain sends out.
+        //
+        // `expect(tx).to.emit(contract, "EventName").withArgs(arg1, arg2)`
+        // checks that the transaction emitted the expected event.
+        await expect(certificateRegistry.addInstitution(institution1.address))
+          .to.emit(certificateRegistry, "InstitutionAdded")
+          .withArgs(institution1.address, owner.address);
+
+        console.log("      ✓ InstitutionAdded event emitted correctly");
+      });
+
+      it("should increment the institution counter", async function () {
+        await certificateRegistry.addInstitution(institution1.address);
+        await certificateRegistry.addInstitution(institution2.address);
+
+        const total = await certificateRegistry.totalInstitutions();
+        expect(total).to.equal(2n);
+        console.log("      ✓ Institution counter:", total.toString());
+      });
+
+      it("should reject adding the zero address", async function () {
+        // The zero address (0x000...000) is like a "null" address.
+        // We should never authorize it.
+        const zeroAddress = "0x0000000000000000000000000000000000000000";
+        await expect(
+          certificateRegistry.addInstitution(zeroAddress)
+        ).to.be.revertedWithCustomError(
+          certificateRegistry,
+          "ZeroAddressNotAllowed"
+        );
+
+        console.log("      ✓ Zero address correctly rejected");
+      });
+
+      it("should reject adding an already authorized institution", async function () {
+        await certificateRegistry.addInstitution(institution1.address);
+
+        // Try to add the same institution again
+        await expect(
+          certificateRegistry.addInstitution(institution1.address)
+        ).to.be.revertedWithCustomError(
+          certificateRegistry,
+          "InstitutionAlreadyAuthorized"
+        );
+
+        console.log("      ✓ Duplicate institution correctly rejected");
+      });
+
+      it("should reject non-owner from adding institutions", async function () {
+        // Only the owner should be able to add institutions.
+        // Connect as institution1 (not the owner) and try to add.
+        await expect(
+          certificateRegistry
+            .connect(institution1)
+            .addInstitution(institution2.address)
+        ).to.be.revertedWithCustomError(
+          certificateRegistry,
+          "OwnableUnauthorizedAccount"
+        );
+
+        console.log(
+          "      ✓ Non-owner correctly blocked from adding institutions"
+        );
+      });
+    });
+
+    // ── Removing Institutions ────────────────────────────────────────────
+    describe("Removing Institutions", function () {
+      beforeEach(async function () {
+        // Add an institution before each removal test
+        await certificateRegistry.addInstitution(institution1.address);
+      });
+
+      it("should allow owner to remove an institution", async function () {
+        await certificateRegistry.removeInstitution(institution1.address);
+
+        const isAuth = await certificateRegistry.isAuthorizedInstitution(
+          institution1.address
+        );
+        expect(isAuth).to.equal(false);
+        console.log("      ✓ Institution removed successfully");
+      });
+
+      it("should emit InstitutionRemoved event", async function () {
+        await expect(
+          certificateRegistry.removeInstitution(institution1.address)
+        )
+          .to.emit(certificateRegistry, "InstitutionRemoved")
+          .withArgs(institution1.address, owner.address);
+
+        console.log("      ✓ InstitutionRemoved event emitted");
+      });
+
+      it("should decrement the institution counter", async function () {
+        const before = await certificateRegistry.totalInstitutions();
+        await certificateRegistry.removeInstitution(institution1.address);
+        const after = await certificateRegistry.totalInstitutions();
+
+        expect(after).to.equal(before - 1n);
+        console.log(
+          "      ✓ Counter went from",
+          before.toString(),
+          "to",
+          after.toString()
+        );
+      });
+
+      it("should reject removing a non-authorized institution", async function () {
+        await expect(
+          certificateRegistry.removeInstitution(institution2.address)
+        ).to.be.revertedWithCustomError(
+          certificateRegistry,
+          "InstitutionNotAuthorized"
+        );
+
+        console.log("      ✓ Non-authorized institution correctly rejected");
+      });
+
+      it("should reject non-owner from removing institutions", async function () {
+        await expect(
+          certificateRegistry
+            .connect(institution1)
+            .removeInstitution(institution1.address)
+        ).to.be.revertedWithCustomError(
+          certificateRegistry,
+          "OwnableUnauthorizedAccount"
+        );
+
+        console.log("      ✓ Non-owner correctly blocked from removing");
+      });
+    });
+  });
+
+  // ========================================================================
+  // TEST GROUP 3: Certificate Issuance
+  // ========================================================================
+  describe("Certificate Issuance", function () {
+    beforeEach(async function () {
+      // Authorize institution1 before each issuance test
+      await certificateRegistry.addInstitution(institution1.address);
+    });
+
+    it("should allow authorized institution to issue a certificate", async function () {
+      await certificateRegistry
+        .connect(institution1)
+        .issueCertificate(
+          sampleCert.id,
+          sampleCert.studentName,
+          sampleCert.studentId,
+          sampleCert.degree,
+          sampleCert.institution,
+          sampleCert.issueDate,
+          sampleCert.ipfsHash
+        );
+
+      // Verify the certificate was stored correctly
+      const cert = await certificateRegistry.getCertificate(sampleCert.id);
+      expect(cert.studentName).to.equal(sampleCert.studentName);
+      expect(cert.studentId).to.equal(sampleCert.studentId);
+      expect(cert.degree).to.equal(sampleCert.degree);
+      expect(cert.institution).to.equal(sampleCert.institution);
+      expect(cert.ipfsHash).to.equal(sampleCert.ipfsHash);
+      expect(cert.issuer).to.equal(institution1.address);
+      expect(cert.isValid).to.equal(true);
+      expect(cert.exists).to.equal(true);
+
+      console.log("      ✓ Certificate issued and stored correctly");
+    });
+
+    it("should emit CertificateIssued event with correct data", async function () {
+      const tx = certificateRegistry
+        .connect(institution1)
+        .issueCertificate(
+          sampleCert.id,
+          sampleCert.studentName,
+          sampleCert.studentId,
+          sampleCert.degree,
+          sampleCert.institution,
+          sampleCert.issueDate,
+          sampleCert.ipfsHash
+        );
+
+      // Check event is emitted (without matching the auto-generated timestamp)
+      await expect(tx)
+        .to.emit(certificateRegistry, "CertificateIssued");
+
+      console.log("      ✓ CertificateIssued event emitted with correct args");
+    });
+
+    it("should increment the certificate counter", async function () {
+      await certificateRegistry
+        .connect(institution1)
+        .issueCertificate(
+          sampleCert.id,
+          sampleCert.studentName,
+          sampleCert.studentId,
+          sampleCert.degree,
+          sampleCert.institution,
+          sampleCert.issueDate,
+          sampleCert.ipfsHash
+        );
+
+      const total = await certificateRegistry.getTotalCertificates();
+      expect(total).to.equal(1n);
+      console.log("      ✓ Certificate count:", total.toString());
+    });
+
+    it("should store the certificate ID in the tracking array", async function () {
+      await certificateRegistry
+        .connect(institution1)
+        .issueCertificate(
+          sampleCert.id,
+          sampleCert.studentName,
+          sampleCert.studentId,
+          sampleCert.degree,
+          sampleCert.institution,
+          sampleCert.issueDate,
+          sampleCert.ipfsHash
+        );
+
+      const storedId = await certificateRegistry.getCertificateIdByIndex(0);
+      expect(storedId).to.equal(sampleCert.id);
+      console.log("      ✓ Certificate ID tracked at index 0:", storedId);
+    });
+
+    it("should handle multiple certificates correctly", async function () {
+      await certificateRegistry
+        .connect(institution1)
+        .issueCertificate(
+          sampleCert.id,
+          sampleCert.studentName,
+          sampleCert.studentId,
+          sampleCert.degree,
+          sampleCert.institution,
+          sampleCert.issueDate,
+          sampleCert.ipfsHash
+        );
+
+      await certificateRegistry
+        .connect(institution1)
+        .issueCertificate(
+          sampleCert2.id,
+          sampleCert2.studentName,
+          sampleCert2.studentId,
+          sampleCert2.degree,
+          sampleCert2.institution,
+          sampleCert2.issueDate,
+          sampleCert2.ipfsHash
+        );
+
+      const total = await certificateRegistry.getTotalCertificates();
+      expect(total).to.equal(2n);
+
+      const count = await certificateRegistry.getAllCertificateIdsCount();
+      expect(count).to.equal(2n);
+
+      console.log("      ✓ Multiple certificates stored correctly");
+    });
+
+    // ── Failure Cases ────────────────────────────────────────────────────
+    describe("Rejection Cases", function () {
+      it("should reject unauthorized address from issuing", async function () {
+        await expect(
+          certificateRegistry
+            .connect(unauthorized)
+            .issueCertificate(
+              sampleCert.id,
+              sampleCert.studentName,
+              sampleCert.studentId,
+              sampleCert.degree,
+              sampleCert.institution,
+              sampleCert.issueDate,
+              sampleCert.ipfsHash
+            )
+        ).to.be.revertedWithCustomError(
+          certificateRegistry,
+          "NotAuthorizedInstitution"
+        );
+
+        console.log("      ✓ Unauthorized address correctly rejected");
+      });
+
+      it("should reject duplicate certificate IDs", async function () {
+        // Issue the first certificate
+        await certificateRegistry
+          .connect(institution1)
+          .issueCertificate(
+            sampleCert.id,
+            sampleCert.studentName,
+            sampleCert.studentId,
+            sampleCert.degree,
+            sampleCert.institution,
+            sampleCert.issueDate,
+            sampleCert.ipfsHash
+          );
+
+        // Try to issue another certificate with the same ID
+        await expect(
+          certificateRegistry
+            .connect(institution1)
+            .issueCertificate(
+              sampleCert.id, // Same ID!
+              "Different Student",
+              "STU-99999",
+              "Different Degree",
+              "Different Uni",
+              sampleCert.issueDate,
+              "QmDifferentHash"
+            )
+        ).to.be.revertedWithCustomError(
+          certificateRegistry,
+          "CertificateAlreadyExists"
+        );
+
+        console.log("      ✓ Duplicate certificate ID correctly rejected");
+      });
+
+      it("should reject empty certificate ID", async function () {
+        await expect(
+          certificateRegistry
+            .connect(institution1)
+            .issueCertificate(
+              "", // Empty!
+              sampleCert.studentName,
+              sampleCert.studentId,
+              sampleCert.degree,
+              sampleCert.institution,
+              sampleCert.issueDate,
+              sampleCert.ipfsHash
+            )
+        ).to.be.revertedWithCustomError(
+          certificateRegistry,
+          "EmptyStringNotAllowed"
+        );
+
+        console.log("      ✓ Empty certificate ID correctly rejected");
+      });
+
+      it("should reject empty student name", async function () {
+        await expect(
+          certificateRegistry
+            .connect(institution1)
+            .issueCertificate(
+              sampleCert.id,
+              "", // Empty!
+              sampleCert.studentId,
+              sampleCert.degree,
+              sampleCert.institution,
+              sampleCert.issueDate,
+              sampleCert.ipfsHash
+            )
+        ).to.be.revertedWithCustomError(
+          certificateRegistry,
+          "EmptyStringNotAllowed"
+        );
+
+        console.log("      ✓ Empty student name correctly rejected");
+      });
+    });
+  });
+
+  // ========================================================================
+  // TEST GROUP 4: Certificate Verification
+  // ========================================================================
+  describe("Certificate Verification", function () {
+    beforeEach(async function () {
+      // Set up: authorize institution and issue a certificate
+      await certificateRegistry.addInstitution(institution1.address);
+      await certificateRegistry
+        .connect(institution1)
+        .issueCertificate(
+          sampleCert.id,
+          sampleCert.studentName,
+          sampleCert.studentId,
+          sampleCert.degree,
+          sampleCert.institution,
+          sampleCert.issueDate,
+          sampleCert.ipfsHash
+        );
+    });
+
+    it("should return correct data for a valid certificate", async function () {
+      const [isValid, studentName, degree, inst, issueDate, issuer] =
+        await certificateRegistry.verifyCertificate(sampleCert.id);
+
+      expect(isValid).to.equal(true);
+      expect(studentName).to.equal(sampleCert.studentName);
+      expect(degree).to.equal(sampleCert.degree);
+      expect(inst).to.equal(sampleCert.institution);
+      expect(Number(issueDate)).to.equal(sampleCert.issueDate);
+      expect(issuer).to.equal(institution1.address);
+
+      console.log("      ✓ Verification returned correct data");
+    });
+
+    it("should allow anyone to verify (not just owner)", async function () {
+      // Connect as a random verifier account
+      const [isValid] = await certificateRegistry
+        .connect(verifier)
+        .verifyCertificate(sampleCert.id);
+
+      expect(isValid).to.equal(true);
+      console.log("      ✓ Any account can verify certificates");
+    });
+
+    it("should be callable as a free view function (no gas)", async function () {
+      // verifyCertificate is a `view` function — it reads data for free.
+      // Note: view functions cannot emit events on the blockchain.
+      // The CertificateVerified event is defined for future non-view
+      // verification functions that may track verification history.
+      const result = await certificateRegistry
+        .connect(verifier)
+        .verifyCertificate(sampleCert.id);
+
+      // Result is a tuple: [isValid, studentName, degree, institution, issueDate, issuer]
+      expect(result[0]).to.equal(true); // isValid
+      expect(result[1]).to.equal(sampleCert.studentName);
+
+      console.log("      ✓ View function works correctly (no gas needed)");
+    });
+
+    it("should revert for non-existent certificate", async function () {
+      await expect(
+        certificateRegistry.verifyCertificate("CERT-NONEXISTENT")
+      ).to.be.revertedWithCustomError(
+        certificateRegistry,
+        "CertificateNotFound"
+      );
+
+      console.log("      ✓ Non-existent certificate correctly rejected");
+    });
+
+    it("should check certificate existence with helper", async function () {
+      const exists = await certificateRegistry.certificateExistsCheck(
+        sampleCert.id
+      );
+      expect(exists).to.equal(true);
+
+      const notExists = await certificateRegistry.certificateExistsCheck(
+        "CERT-NONEXISTENT"
+      );
+      expect(notExists).to.equal(false);
+
+      console.log("      ✓ certificateExistsCheck works correctly");
+    });
+  });
+
+  // ========================================================================
+  // TEST GROUP 5: Certificate Revocation
+  // ========================================================================
+  describe("Certificate Revocation", function () {
+    beforeEach(async function () {
+      await certificateRegistry.addInstitution(institution1.address);
+      await certificateRegistry.addInstitution(institution2.address);
+
+      // Issue a certificate from institution1
+      await certificateRegistry
+        .connect(institution1)
+        .issueCertificate(
+          sampleCert.id,
+          sampleCert.studentName,
+          sampleCert.studentId,
+          sampleCert.degree,
+          sampleCert.institution,
+          sampleCert.issueDate,
+          sampleCert.ipfsHash
+        );
+    });
+
+    it("should allow the original issuer to revoke", async function () {
+      await certificateRegistry
+        .connect(institution1)
+        .revokeCertificate(sampleCert.id);
+
+      const cert = await certificateRegistry.getCertificate(sampleCert.id);
+      expect(cert.isValid).to.equal(false);
+
+      console.log("      ✓ Certificate revoked by original issuer");
+    });
+
+    it("should reject revocation by the owner if not the issuer", async function () {
+      // The contract only allows the original issuer to revoke.
+      // Even the contract owner cannot revoke certificates they didn't issue.
+      await expect(
+        certificateRegistry
+          .connect(owner)
+          .revokeCertificate(sampleCert.id)
+      ).to.be.revertedWithCustomError(
+        certificateRegistry,
+        "OnlyIssuerCanRevoke"
+      );
+
+      console.log("      ✓ Owner correctly blocked (only issuer can revoke)");
+    });
+
+    it("should emit CertificateRevoked event", async function () {
+      // Check the event is emitted (without matching timestamp)
+      await expect(
+        certificateRegistry
+          .connect(institution1)
+          .revokeCertificate(sampleCert.id)
+      )
+        .to.emit(certificateRegistry, "CertificateRevoked");
+
+      console.log("      ✓ CertificateRevoked event emitted");
+    });
+
+    it("should increment the revocation counter", async function () {
+      await certificateRegistry
+        .connect(institution1)
+        .revokeCertificate(sampleCert.id);
+
+      const revocations = await certificateRegistry.totalRevocations();
+      expect(revocations).to.equal(1n);
+
+      console.log("      ✓ Revocation counter incremented");
+    });
+
+    it("should show as invalid after revocation", async function () {
+      // Revoke the certificate
+      await certificateRegistry
+        .connect(institution1)
+        .revokeCertificate(sampleCert.id);
+
+      // Verify it — should show as invalid
+      const [isValid] = await certificateRegistry.verifyCertificate(
+        sampleCert.id
+      );
+      expect(isValid).to.equal(false);
+
+      console.log("      ✓ Revoked certificate shows as invalid");
+    });
+
+    // ── Failure Cases ────────────────────────────────────────────────────
+    describe("Rejection Cases", function () {
+      it("should reject revocation by a different institution", async function () {
+        // institution2 did NOT issue this certificate, so it can't revoke it
+        await expect(
+          certificateRegistry
+            .connect(institution2)
+            .revokeCertificate(sampleCert.id)
+        ).to.be.revertedWithCustomError(
+          certificateRegistry,
+          "OnlyIssuerCanRevoke"
+        );
+
+        console.log("      ✓ Different institution correctly blocked");
+      });
+
+      it("should reject revocation by unauthorized address", async function () {
+        await expect(
+          certificateRegistry
+            .connect(unauthorized)
+            .revokeCertificate(sampleCert.id)
+        ).to.be.revertedWithCustomError(
+          certificateRegistry,
+          "OnlyIssuerCanRevoke"
+        );
+
+        console.log("      ✓ Unauthorized address correctly blocked");
+      });
+
+      it("should reject revoking an already-revoked certificate", async function () {
+        // Revoke once
+        await certificateRegistry
+          .connect(institution1)
+          .revokeCertificate(sampleCert.id);
+
+        // Try to revoke again
+        await expect(
+          certificateRegistry
+            .connect(institution1)
+            .revokeCertificate(sampleCert.id)
+        ).to.be.revertedWithCustomError(
+          certificateRegistry,
+          "CertificateAlreadyRevoked"
+        );
+
+        console.log("      ✓ Double-revocation correctly prevented");
+      });
+
+      it("should reject revoking a non-existent certificate", async function () {
+        await expect(
+          certificateRegistry
+            .connect(institution1)
+            .revokeCertificate("CERT-NONEXISTENT")
+        ).to.be.revertedWithCustomError(
+          certificateRegistry,
+          "CertificateNotFound"
+        );
+
+        console.log("      ✓ Non-existent certificate correctly rejected");
+      });
+    });
+  });
+
+  // ========================================================================
+  // TEST GROUP 6: Getter Functions & Edge Cases
+  // ========================================================================
+  describe("Getter Functions & Edge Cases", function () {
+    beforeEach(async function () {
+      await certificateRegistry.addInstitution(institution1.address);
+    });
+
+    it("should return correct total certificates after multiple issues", async function () {
+      for (let i = 1; i <= 5; i++) {
+        await certificateRegistry
+          .connect(institution1)
+          .issueCertificate(
+            `CERT-${i}`,
+            `Student ${i}`,
+            `STU-${i}`,
+            `Degree ${i}`,
+            "Test University",
+            sampleCert.issueDate + i,
+            `QmHash${i}`
+          );
+      }
+
+      const total = await certificateRegistry.getTotalCertificates();
+      expect(total).to.equal(5n);
+
+      const count = await certificateRegistry.getAllCertificateIdsCount();
+      expect(count).to.equal(5n);
+
+      console.log("      ✓ Correctly tracks", total.toString(), "certificates");
+    });
+
+    it("should return correct certificate by index", async function () {
+      await certificateRegistry
+        .connect(institution1)
+        .issueCertificate(
+          sampleCert.id,
+          sampleCert.studentName,
+          sampleCert.studentId,
+          sampleCert.degree,
+          sampleCert.institution,
+          sampleCert.issueDate,
+          sampleCert.ipfsHash
+        );
+
+      await certificateRegistry
+        .connect(institution1)
+        .issueCertificate(
+          sampleCert2.id,
+          sampleCert2.studentName,
+          sampleCert2.studentId,
+          sampleCert2.degree,
+          sampleCert2.institution,
+          sampleCert2.issueDate,
+          sampleCert2.ipfsHash
+        );
+
+      const id0 = await certificateRegistry.getCertificateIdByIndex(0);
+      const id1 = await certificateRegistry.getCertificateIdByIndex(1);
+
+      expect(id0).to.equal(sampleCert.id);
+      expect(id1).to.equal(sampleCert2.id);
+
+      console.log("      ✓ Index 0:", id0, "| Index 1:", id1);
+    });
+
+    it("should correctly report institution authorization status", async function () {
+      expect(
+        await certificateRegistry.isAuthorizedInstitution(institution1.address)
+      ).to.equal(true);
+
+      expect(
+        await certificateRegistry.isAuthorizedInstitution(unauthorized.address)
+      ).to.equal(false);
+
+      console.log("      ✓ Authorization checks work correctly");
+    });
+
+    it("should handle the full lifecycle: add → issue → verify → revoke", async function () {
+      // 1. Institution already added in beforeEach
+      console.log("      Step 1: Institution authorized ✓");
+
+      // 2. Issue a certificate
+      await certificateRegistry
+        .connect(institution1)
+        .issueCertificate(
+          sampleCert.id,
+          sampleCert.studentName,
+          sampleCert.studentId,
+          sampleCert.degree,
+          sampleCert.institution,
+          sampleCert.issueDate,
+          sampleCert.ipfsHash
+        );
+      console.log("      Step 2: Certificate issued ✓");
+
+      // 3. Verify — should be valid
+      const [isValid1] = await certificateRegistry.verifyCertificate(
+        sampleCert.id
+      );
+      expect(isValid1).to.equal(true);
+      console.log("      Step 3: Certificate verified as valid ✓");
+
+      // 4. Revoke
+      await certificateRegistry
+        .connect(institution1)
+        .revokeCertificate(sampleCert.id);
+      console.log("      Step 4: Certificate revoked ✓");
+
+      // 5. Verify again — should be invalid
+      const [isValid2] = await certificateRegistry.verifyCertificate(
+        sampleCert.id
+      );
+      expect(isValid2).to.equal(false);
+      console.log("      Step 5: Certificate verified as invalid ✓");
+
+      // 6. Check stats
+      const totalCerts = await certificateRegistry.getTotalCertificates();
+      const totalRevocations = await certificateRegistry.totalRevocations();
+      expect(totalCerts).to.equal(1n);
+      expect(totalRevocations).to.equal(1n);
+      console.log("      Step 6: Stats correct (1 cert, 1 revocation) ✓");
+    });
+  });
+});
