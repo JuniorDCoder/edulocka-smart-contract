@@ -11,6 +11,8 @@
 //   ✅ Daily rate limiting per institution (configurable by owner)
 //   ✅ Full audit trail via events for every admin action
 //   ✅ Reentrancy protection on all state-changing functions
+//   ✅ Operator delegation: institutions can authorize a backend signer to issue
+//      certificates on their behalf without exposing the institution private key
 //
 // ============================================================================
 
@@ -39,7 +41,7 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
     }
 
     /// @notice Holds verified institution metadata stored on-chain
-    /// @dev Only the contract owner can create/modify institution records
+    /// @dev Only the contract owner (Edulocka admin) can create/modify institution records
     struct Institution {
         string name;                // Official institution name
         string registrationNumber;  // Government registration / accreditation number
@@ -86,6 +88,18 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
 
     /// @notice Maximum certificates an institution can issue per day (0 = unlimited)
     uint256 public maxDailyCertificates;
+
+    // ── Operator delegation ─────────────────────────────────────────────────
+    /// @notice Maps an operator address to the institution address it acts on behalf of.
+    ///         operator => institution
+    ///         This lets a backend signer key issue certificates without holding the
+    ///         institution's private key.
+    mapping(address => address) public operatorOf;
+
+    /// @notice Maps an institution address to its currently registered operator.
+    ///         institution => operator
+    ///         Stored so institutions can look up / clear their own operator.
+    mapping(address => address) public institutionOperator;
 
 
     // ========================================================================
@@ -146,6 +160,18 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
         address indexed updatedBy
     );
 
+    /// @notice Emitted when an institution registers an operator
+    event OperatorSet(
+        address indexed institution,
+        address indexed operator
+    );
+
+    /// @notice Emitted when an institution removes its operator
+    event OperatorRemoved(
+        address indexed institution,
+        address indexed operator
+    );
+
 
     // ========================================================================
     // CUSTOM ERRORS
@@ -162,18 +188,24 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
     error InstitutionAlreadyAuthorized(address institution);
     error InstitutionNotAuthorized(address institution);
     error OnlyIssuerCanRevoke(address caller, address issuer);
+    error OperatorAlreadySet(address institution, address operator);
+    error NotAnOperator(address caller);
 
 
     // ========================================================================
     // MODIFIERS
     // ========================================================================
 
-    /// @notice Ensures caller is an authorized AND active institution
+    /// @notice Resolves the effective institution for msg.sender.
+    ///         - If msg.sender is itself an authorized institution → use it directly.
+    ///         - If msg.sender is a registered operator → use the institution it represents.
+    ///         Reverts if neither condition is true.
     modifier onlyAuthorizedInstitution() {
-        if (!isAuthorized[msg.sender]) {
+        address resolved = _resolveInstitution(msg.sender);
+        if (!isAuthorized[resolved]) {
             revert NotAuthorizedInstitution(msg.sender);
         }
-        if (!authorizedInstitutions[msg.sender].isActive) {
+        if (!authorizedInstitutions[resolved].isActive) {
             revert InstitutionNotActive(msg.sender);
         }
         _;
@@ -201,6 +233,84 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
     constructor() Ownable(msg.sender) {
         // Default: no daily limit (0 = unlimited)
         maxDailyCertificates = 0;
+    }
+
+
+    // ========================================================================
+    // OPERATOR DELEGATION
+    // ========================================================================
+
+    /// @notice Register a backend operator address that can issue certificates
+    ///         on behalf of the calling institution.
+    ///         Each institution can have at most ONE operator at a time.
+    ///         Call setOperator(address(0)) or clearOperator() to remove it.
+    /// @dev Can also be called by the contract owner on behalf of any institution
+    ///      (useful for initial setup without requiring the institution to call).
+    /// @param _institution The authorized institution address
+    /// @param _operator    The backend signer address to delegate to
+    function setOperator(address _institution, address _operator) external {
+        // Only the institution itself OR the contract owner can set the operator
+        require(
+            msg.sender == _institution || msg.sender == owner(),
+            "Only institution or owner can set operator"
+        );
+        if (!isAuthorized[_institution]) {
+            revert InstitutionNotAuthorized(_institution);
+        }
+        if (_operator == address(0)) {
+            revert ZeroAddressNotAllowed();
+        }
+        if (_operator == _institution) {
+            revert EmptyStringNotAllowed("operator cannot equal institution");
+        }
+
+        // Clear any previous operator for this institution
+        address oldOperator = institutionOperator[_institution];
+        if (oldOperator != address(0)) {
+            delete operatorOf[oldOperator];
+            emit OperatorRemoved(_institution, oldOperator);
+        }
+
+        institutionOperator[_institution] = _operator;
+        operatorOf[_operator] = _institution;
+
+        emit OperatorSet(_institution, _operator);
+    }
+
+    /// @notice Remove the operator for the calling institution (or any institution
+    ///         if called by the contract owner).
+    function clearOperator(address _institution) external {
+        require(
+            msg.sender == _institution || msg.sender == owner(),
+            "Only institution or owner can clear operator"
+        );
+
+        address oldOperator = institutionOperator[_institution];
+        if (oldOperator == address(0)) return; // Nothing to clear
+
+        delete operatorOf[oldOperator];
+        delete institutionOperator[_institution];
+
+        emit OperatorRemoved(_institution, oldOperator);
+    }
+
+    /// @notice Returns the effective institution address for a given caller.
+    ///         Returns the caller itself if it is an institution,
+    ///         or the institution it is an operator for.
+    function _resolveInstitution(address caller) internal view returns (address) {
+        if (isAuthorized[caller]) {
+            return caller; // Caller IS the institution
+        }
+        address institution = operatorOf[caller];
+        if (institution != address(0)) {
+            return institution; // Caller is an operator for this institution
+        }
+        return caller; // Neither — will fail authorization check
+    }
+
+    /// @notice Public view of _resolveInstitution for off-chain use
+    function resolveInstitution(address caller) external view returns (address) {
+        return _resolveInstitution(caller);
     }
 
 
@@ -274,6 +384,14 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
         authorizedInstitutions[_institution].isActive = false;
         totalInstitutions--;
 
+        // Also clear any registered operator for this institution
+        address operator = institutionOperator[_institution];
+        if (operator != address(0)) {
+            delete operatorOf[operator];
+            delete institutionOperator[_institution];
+            emit OperatorRemoved(_institution, operator);
+        }
+
         emit InstitutionRemoved(_institution, msg.sender);
     }
 
@@ -330,8 +448,10 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
     // CERTIFICATE ISSUANCE
     // ========================================================================
 
-    /// @notice Issue a new academic certificate on the blockchain
-    /// @dev Only authorized AND active institutions can call this
+    /// @notice Issue a new academic certificate on the blockchain.
+    ///         Can be called by an authorized institution OR its registered operator.
+    /// @dev The certificate's `issuer` field always records the INSTITUTION address,
+    ///      not the operator, so on-chain provenance is always tied to the institution.
     function issueCertificate(
         string memory _certificateId,
         string memory _studentName,
@@ -342,10 +462,19 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
         string memory _ipfsHash
     )
         external
-        onlyAuthorizedInstitution
         notEmpty(_certificateId, "certificateId")
         nonReentrant
     {
+        // Resolve the institution (caller may be the institution itself or an operator)
+        address institutionAddr = _resolveInstitution(msg.sender);
+
+        if (!isAuthorized[institutionAddr]) {
+            revert NotAuthorizedInstitution(msg.sender);
+        }
+        if (!authorizedInstitutions[institutionAddr].isActive) {
+            revert InstitutionNotActive(msg.sender);
+        }
+
         if (certificates[_certificateId].exists) {
             revert CertificateAlreadyExists(_certificateId);
         }
@@ -357,7 +486,7 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
         if (bytes(_ipfsHash).length == 0) revert EmptyStringNotAllowed("ipfsHash");
 
         // ── RATE LIMITING: Check daily certificate limit ───────────────────
-        Institution storage inst = authorizedInstitutions[msg.sender];
+        Institution storage inst = authorizedInstitutions[institutionAddr];
         if (maxDailyCertificates > 0) {
             uint256 today = block.timestamp / 1 days;
             if (inst.lastIssuedDate < today) {
@@ -366,12 +495,13 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
                 inst.lastIssuedDate = today;
             }
             if (inst.dailyIssued >= maxDailyCertificates) {
-                revert DailyCertificateLimitReached(msg.sender, maxDailyCertificates);
+                revert DailyCertificateLimitReached(institutionAddr, maxDailyCertificates);
             }
             inst.dailyIssued++;
         }
 
         // ── CREATE: Build the Certificate struct ───────────────────────────
+        // issuer is always the INSTITUTION address, even if an operator submitted the tx
         certificates[_certificateId] = Certificate({
             studentName: _studentName,
             studentId: _studentId,
@@ -379,7 +509,7 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
             institution: _institution,
             issueDate: _issueDate,
             ipfsHash: _ipfsHash,
-            issuer: msg.sender,
+            issuer: institutionAddr,
             isValid: true,
             exists: true
         });
@@ -394,7 +524,7 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
             _certificateId,
             _studentName,
             _institution,
-            msg.sender,
+            institutionAddr,
             block.timestamp
         );
     }
@@ -446,14 +576,16 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
     // CERTIFICATE REVOCATION
     // ========================================================================
 
+    /// @notice Revoke a certificate. Only the issuing institution (or its operator) can revoke.
     function revokeCertificate(string memory _certificateId)
         external
         certificateExists(_certificateId)
         nonReentrant
     {
         Certificate storage cert = certificates[_certificateId];
+        address callerInstitution = _resolveInstitution(msg.sender);
 
-        if (cert.issuer != msg.sender) {
+        if (cert.issuer != callerInstitution) {
             revert OnlyIssuerCanRevoke(msg.sender, cert.issuer);
         }
         if (!cert.isValid) {
