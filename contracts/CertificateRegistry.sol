@@ -22,7 +22,6 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract CertificateRegistry is Ownable, ReentrancyGuard {
-
     // ========================================================================
     // DATA STRUCTURES
     // ========================================================================
@@ -43,14 +42,14 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
     /// @notice Holds verified institution metadata stored on-chain
     /// @dev Only the contract owner (Edulocka admin) can create/modify institution records
     struct Institution {
-        string name;                // Official institution name
-        string registrationNumber;  // Government registration / accreditation number
-        string country;             // Country of registration (ISO code or full name)
-        bool isActive;              // Whether the institution can currently issue certs
-        uint256 authorizedDate;     // Timestamp when institution was authorized
-        uint256 totalIssued;        // How many certificates this institution has issued
-        uint256 dailyIssued;        // Certificates issued today (for rate limiting)
-        uint256 lastIssuedDate;     // Day timestamp of last issuance (for daily reset)
+        string name; // Official institution name
+        string registrationNumber; // Government registration / accreditation number
+        string country; // Country of registration (ISO code or full name)
+        bool isActive; // Whether the institution can currently issue certs
+        uint256 authorizedDate; // Timestamp when institution was authorized
+        uint256 totalIssued; // How many certificates this institution has issued
+        uint256 dailyIssued; // Certificates issued today (for rate limiting)
+        uint256 lastIssuedDate; // Day timestamp of last issuance (for daily reset)
     }
 
     enum CertificateStatus {
@@ -58,7 +57,6 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
         Revoked,
         Expired
     }
-
 
     // ========================================================================
     // STATE VARIABLES
@@ -100,7 +98,6 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
     ///         institution => operator
     ///         Stored so institutions can look up / clear their own operator.
     mapping(address => address) public institutionOperator;
-
 
     // ========================================================================
     // EVENTS
@@ -161,17 +158,13 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
     );
 
     /// @notice Emitted when an institution registers an operator
-    event OperatorSet(
-        address indexed institution,
-        address indexed operator
-    );
+    event OperatorSet(address indexed institution, address indexed operator);
 
     /// @notice Emitted when an institution removes its operator
     event OperatorRemoved(
         address indexed institution,
         address indexed operator
     );
-
 
     // ========================================================================
     // CUSTOM ERRORS
@@ -190,7 +183,6 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
     error OnlyIssuerCanRevoke(address caller, address issuer);
     error OperatorAlreadySet(address institution, address operator);
     error NotAnOperator(address caller);
-
 
     // ========================================================================
     // MODIFIERS
@@ -225,7 +217,6 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
         _;
     }
 
-
     // ========================================================================
     // CONSTRUCTOR
     // ========================================================================
@@ -234,7 +225,6 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
         // Default: no daily limit (0 = unlimited)
         maxDailyCertificates = 0;
     }
-
 
     // ========================================================================
     // OPERATOR DELEGATION
@@ -297,7 +287,9 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
     /// @notice Returns the effective institution address for a given caller.
     ///         Returns the caller itself if it is an institution,
     ///         or the institution it is an operator for.
-    function _resolveInstitution(address caller) internal view returns (address) {
+    function _resolveInstitution(
+        address caller
+    ) internal view returns (address) {
         if (isAuthorized[caller]) {
             return caller; // Caller IS the institution
         }
@@ -309,10 +301,11 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
     }
 
     /// @notice Public view of _resolveInstitution for off-chain use
-    function resolveInstitution(address caller) external view returns (address) {
+    function resolveInstitution(
+        address caller
+    ) external view returns (address) {
         return _resolveInstitution(caller);
     }
-
 
     // ========================================================================
     // INSTITUTION MANAGEMENT (Enhanced with metadata)
@@ -367,7 +360,13 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
             institutionIndexed[_institution] = true;
         }
 
-        emit InstitutionAdded(_institution, msg.sender, _name, _registrationNumber, _country);
+        emit InstitutionAdded(
+            _institution,
+            msg.sender,
+            _name,
+            _registrationNumber,
+            _country
+        );
     }
 
     /// @notice Remove an institution's authorization permanently
@@ -416,12 +415,18 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
     }
 
     /// @notice Check if an address is an authorized institution
-    function isAuthorizedInstitution(address _institution) external view returns (bool) {
-        return isAuthorized[_institution] && authorizedInstitutions[_institution].isActive;
+    function isAuthorizedInstitution(
+        address _institution
+    ) external view returns (bool) {
+        return
+            isAuthorized[_institution] &&
+            authorizedInstitutions[_institution].isActive;
     }
 
     /// @notice Get full institution details for a given address
-    function getInstitution(address _institution) external view returns (Institution memory) {
+    function getInstitution(
+        address _institution
+    ) external view returns (Institution memory) {
         return authorizedInstitutions[_institution];
     }
 
@@ -431,7 +436,9 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
     }
 
     /// @notice Get institution address by index (for enumeration)
-    function getInstitutionAddressByIndex(uint256 _index) external view returns (address) {
+    function getInstitutionAddressByIndex(
+        uint256 _index
+    ) external view returns (address) {
         require(_index < allInstitutionAddresses.length, "Index out of bounds");
         return allInstitutionAddresses[_index];
     }
@@ -442,7 +449,6 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
         maxDailyCertificates = _limit;
         emit DailyLimitUpdated(oldLimit, _limit, msg.sender);
     }
-
 
     // ========================================================================
     // CERTIFICATE ISSUANCE
@@ -460,11 +466,7 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
         string memory _institution,
         uint256 _issueDate,
         string memory _ipfsHash
-    )
-        external
-        notEmpty(_certificateId, "certificateId")
-        nonReentrant
-    {
+    ) external notEmpty(_certificateId, "certificateId") nonReentrant {
         // Resolve the institution (caller may be the institution itself or an operator)
         address institutionAddr = _resolveInstitution(msg.sender);
 
@@ -479,11 +481,14 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
             revert CertificateAlreadyExists(_certificateId);
         }
 
-        if (bytes(_studentName).length == 0) revert EmptyStringNotAllowed("studentName");
-        if (bytes(_studentId).length == 0) revert EmptyStringNotAllowed("studentId");
+        if (bytes(_studentName).length == 0)
+            revert EmptyStringNotAllowed("studentName");
+        if (bytes(_studentId).length == 0)
+            revert EmptyStringNotAllowed("studentId");
         if (bytes(_degree).length == 0) revert EmptyStringNotAllowed("degree");
-        if (bytes(_institution).length == 0) revert EmptyStringNotAllowed("institution");
-        if (bytes(_ipfsHash).length == 0) revert EmptyStringNotAllowed("ipfsHash");
+        if (bytes(_institution).length == 0)
+            revert EmptyStringNotAllowed("institution");
+        // Note: ipfsHash can be empty initially — it's populated after IPFS upload succeeds
 
         // ── RATE LIMITING: Check daily certificate limit ───────────────────
         Institution storage inst = authorizedInstitutions[institutionAddr];
@@ -495,7 +500,10 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
                 inst.lastIssuedDate = today;
             }
             if (inst.dailyIssued >= maxDailyCertificates) {
-                revert DailyCertificateLimitReached(institutionAddr, maxDailyCertificates);
+                revert DailyCertificateLimitReached(
+                    institutionAddr,
+                    maxDailyCertificates
+                );
             }
             inst.dailyIssued++;
         }
@@ -529,12 +537,13 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
         );
     }
 
-
     // ========================================================================
     // CERTIFICATE VERIFICATION
     // ========================================================================
 
-    function verifyCertificate(string memory _certificateId)
+    function verifyCertificate(
+        string memory _certificateId
+    )
         external
         view
         certificateExists(_certificateId)
@@ -558,7 +567,9 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
         );
     }
 
-    function getCertificate(string memory _certificateId)
+    function getCertificate(
+        string memory _certificateId
+    )
         external
         view
         certificateExists(_certificateId)
@@ -567,21 +578,20 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
         return certificates[_certificateId];
     }
 
-    function certificateExistsCheck(string memory _certificateId) external view returns (bool) {
+    function certificateExistsCheck(
+        string memory _certificateId
+    ) external view returns (bool) {
         return certificates[_certificateId].exists;
     }
-
 
     // ========================================================================
     // CERTIFICATE REVOCATION
     // ========================================================================
 
     /// @notice Revoke a certificate. Only the issuing institution (or its operator) can revoke.
-    function revokeCertificate(string memory _certificateId)
-        external
-        certificateExists(_certificateId)
-        nonReentrant
-    {
+    function revokeCertificate(
+        string memory _certificateId
+    ) external certificateExists(_certificateId) nonReentrant {
         Certificate storage cert = certificates[_certificateId];
         address callerInstitution = _resolveInstitution(msg.sender);
 
@@ -598,7 +608,6 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
         emit CertificateRevoked(_certificateId, msg.sender, block.timestamp);
     }
 
-
     // ========================================================================
     // UTILITY / HELPER FUNCTIONS
     // ========================================================================
@@ -607,7 +616,9 @@ contract CertificateRegistry is Ownable, ReentrancyGuard {
         return totalCertificates;
     }
 
-    function getCertificateIdByIndex(uint256 _index) external view returns (string memory) {
+    function getCertificateIdByIndex(
+        uint256 _index
+    ) external view returns (string memory) {
         require(_index < allCertificateIds.length, "Index out of bounds");
         return allCertificateIds[_index];
     }
