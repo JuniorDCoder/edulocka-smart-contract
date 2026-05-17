@@ -24,7 +24,7 @@ const hre = require("hardhat");
 
 // ⚠️  REPLACE THIS with your actual deployed contract address!
 // You get this address from the deploy script output.
-const CONTRACT_ADDRESS = "0xfdc705f32A85AA367c73e4F3EB602Bf9018CeF3f";
+const CONTRACT_ADDRESS = "0xf6fd32561c51FBa2DC4cff86CAC27426Fd880E54";
 
 async function main() {
   console.log("=".repeat(60));
